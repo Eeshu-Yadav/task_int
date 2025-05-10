@@ -9,8 +9,8 @@ class Couple(models.Model):
     user2 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='couple_user2')
     created_at = models.DateTimeField(auto_now_add=True)
 
-    # class Meta:
-    #     unique_together = ('user1', 'user2')
+    class Meta:
+        unique_together = ('user1', 'user2')
 
 class ChatKeyword(models.Model):
     couple = models.ForeignKey(Couple, on_delete=models.CASCADE)
