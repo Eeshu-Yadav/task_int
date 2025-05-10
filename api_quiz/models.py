@@ -1,7 +1,7 @@
 from django.db import models
 from django.contrib.auth import get_user_model
 import json
-
+from django.db.models import JSONField
 User = get_user_model()
 
 class Couple(models.Model):
@@ -17,9 +17,10 @@ class ChatKeyword(models.Model):
     keyword = models.CharField(max_length=100)
     frequency = models.IntegerField(default=1)
     last_used = models.DateTimeField(auto_now=True)
+    is_phrase = models.BooleanField(default=False) 
 
-    # class Meta:
-    #     unique_together = ('couple', 'keyword')
+    class Meta:
+        unique_together = ('couple', 'keyword')
 
 class QuizTemplate(models.Model):
     TEMPLATE_CHOICES = [
@@ -38,8 +39,8 @@ class QuizTemplate(models.Model):
 class QuizQuestion(models.Model):
     couple = models.ForeignKey(Couple, on_delete=models.CASCADE)
     template = models.ForeignKey(QuizTemplate, on_delete=models.CASCADE)
-    question_data = models.JSONField()
+    question_data = JSONField()
     # keywords = models.JSONField()
-    keywords = models.TextField()
+    source_keywords = JSONField()
     created_at = models.DateTimeField(auto_now_add=True)
 

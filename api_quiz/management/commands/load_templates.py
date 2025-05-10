@@ -110,9 +110,12 @@ Example format:
 
 
 class Command(BaseCommand):
+    help = 'Loads or updates quiz templates'
+    
     def handle(self, *args, **options):
-        for t in TEMPLATES:
+        for template in TEMPLATES:
             QuizTemplate.objects.update_or_create(
-                template_type=t['template_type'],
-                defaults=t
+                template_type=template['template_type'],
+                defaults=template
             )
+        self.stdout.write(self.style.SUCCESS('Successfully loaded templates'))
