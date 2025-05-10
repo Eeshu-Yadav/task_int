@@ -8,7 +8,7 @@ from collections import defaultdict
 from .text_processing import TextProcessor
 from jsonschema import validate
 from django.core.exceptions import ValidationError
-from django.db.models import F
+from django.db.models import F,Q
 import logging
 
 
@@ -90,49 +90,87 @@ def jaccard_similarity(a, b):
 
 
 class KeywordManager:
+    # @staticmethod
+    # def update_keywords(couple_id, text):
+    #     """Handle keyword extraction and storage with proper error handling"""
+    #     try:
+    #         phrases = TextProcessor.extract_phrases(text)
+    #         logger.debug(f"Extracted phrases for couple {couple_id}: {phrases}")
+
+    #         # Process all phrase types with validation
+    #         for phrase_type in ['words', 'bigrams', 'trigrams']:
+    #             for item in phrases.get(phrase_type, []):
+    #                 if not isinstance(item, tuple) or len(item) != 2:
+    #                     logger.warning(f"Invalid phrase item: {item}")
+    #                     continue
+
+    #                 phrase, freq = item
+    #                 is_phrase = phrase_type in ['bigrams', 'trigrams']
+
+    #                 try:
+    #                     obj, created = ChatKeyword.objects.get_or_create(
+    #                         couple_id=couple_id,
+    #                         keyword=phrase,
+    #                         defaults={'frequency': freq, 'is_phrase': is_phrase}
+    #                     )
+                        
+    #                     if not created:
+    #                         obj.frequency = F('frequency') + freq
+    #                         obj.save(update_fields=['frequency'])
+                            
+    #                 except Exception as e:
+    #                     logger.error(f"Failed to process {phrase_type} '{phrase}': {str(e)}")
+
+    #         logger.info(f"Successfully updated keywords for couple {couple_id}")
+            
+    #     except Exception as e:
+    #         logger.error(f"Keyword update failed: {str(e)}")
+    #         raise
+
     @staticmethod
     def update_keywords(couple_id, text):
-        """Handle keyword extraction and storage with proper error handling"""
+        """Enhanced keyword processing with phrase prioritization"""
         try:
             phrases = TextProcessor.extract_phrases(text)
-            logger.debug(f"Extracted phrases for couple {couple_id}: {phrases}")
-
-            # Process all phrase types with validation
-            for phrase_type in ['words', 'bigrams', 'trigrams']:
-                for item in phrases.get(phrase_type, []):
-                    if not isinstance(item, tuple) or len(item) != 2:
-                        logger.warning(f"Invalid phrase item: {item}")
-                        continue
-
-                    phrase, freq = item
-                    is_phrase = phrase_type in ['bigrams', 'trigrams']
-
-                    try:
-                        obj, created = ChatKeyword.objects.get_or_create(
-                            couple_id=couple_id,
-                            keyword=phrase,
-                            defaults={'frequency': freq, 'is_phrase': is_phrase}
-                        )
-                        
-                        if not created:
-                            obj.frequency = F('frequency') + freq
-                            obj.save(update_fields=['frequency'])
-                            
-                    except Exception as e:
-                        logger.error(f"Failed to process {phrase_type} '{phrase}': {str(e)}")
-
-            logger.info(f"Successfully updated keywords for couple {couple_id}")
             
+            # Filter and weight phrases
+            processed = []
+            for phrase_type in ['trigrams', 'bigrams', 'words']:
+                for phrase, freq in phrases.get(phrase_type, []):
+                    # Add type-based weights
+                    weight = {
+                        'trigrams': 3,
+                        'bigrams': 2,
+                        'words': 1
+                    }[phrase_type]
+                    
+                    # Filter meaningless phrases
+                    if TextProcessor.is_meaningful(phrase):
+                        processed.append((phrase, freq * weight))
+            
+            # Update database with weighted frequencies
+            for phrase, weighted_freq in processed:
+                obj, created = ChatKeyword.objects.update_or_create(
+                    couple_id=couple_id,
+                    keyword=phrase,
+                    defaults={'frequency': weighted_freq}
+                )
+                if not created:
+                    obj.frequency = F('frequency') + weighted_freq
+                    obj.save(update_fields=['frequency'])
+            logger.info(f"Updated keywords for couple {couple_id}")
         except Exception as e:
             logger.error(f"Keyword update failed: {str(e)}")
             raise
+        
 
     @staticmethod
     def get_top_keywords(couple_id, limit=10):
         """Retrieve top keywords with proper error handling"""
         try:
             raw = list(ChatKeyword.objects.filter(couple_id=couple_id)
-                       .order_by('-frequency')[:limit]
+                       .extra(select={'length': 'LENGTH(keyword)'})
+                       .order_by('-frequency', '-length')[:limit]
                        .values_list('keyword', flat=True))
             logger.debug(f"Top keywords for couple {couple_id}: {raw}")
             return raw
@@ -143,8 +181,9 @@ class KeywordManager:
 
 
 class QuizGenerator:
-    THRESHOLD = 0.6       # Jaccard similarity threshold for cache reuse
-    LOOKBACK = 20
+    THRESHOLD = 0.75
+    LOOKBACK = 10
+    # MIN_KEYWORDS = 5
     MAX_NOVELTY = 0.3
     TEMPLATE_MAPPING = {
         'MCQ': ['favorite', 'remember', 'know', 'prefer', 'love'],
@@ -185,16 +224,112 @@ class QuizGenerator:
             
             # Next, try cross-couple lookup for same keywords
             cross = QuizQuestion.objects.filter(
-                template__template_type=template_type,
-                source_keywords=keywords
-            ).order_by('-created_at').first()
+                Q(couple_id=couple_id) | Q(source_keywords__overlap=keywords),
+                template__template_type=template_type
+            ).order_by('-created_at')[:10]
             if cross:
                 logger.info(f"Cross-couple cache hit: QuizQuestion {cross.id}")
                 return cross
             
+            best_match = None
+            highest_score = 0.0
+            for candidate in cross:
+                score = jaccard_similarity(keywords, candidate.source_keywords)
+                if score > highest_score and score >= QuizGenerator.THRESHOLD:
+                    highest_score = score
+                    best_match = candidate
+
+            return best_match if highest_score > 0 else None
+
         except Exception as e:
-            logger.error(f"Cache lookup failed: {str(e)}")
+            logger.error(f"Cache lookup error: {str(e)}")
             return None
+
+
+    # @staticmethod
+    # def get_cached_questions(template_type, keywords, couple_id=None):
+    #     """
+    #     1) Try exact match for this couple.
+    #     2) If none, try exact match across all couples.
+    #     """
+    #     qs = QuizQuestion.objects.filter(
+    #         template__template_type=template_type,
+    #         source_keywords=keywords
+    #     ).order_by('-created_at')
+
+    #     if couple_id is not None:
+    #         couple_hit = qs.filter(couple_id=couple_id).first()
+    #         if couple_hit:
+    #             logger.info(f"Exact cache hit for couple {couple_id}: QuizQuestion {couple_hit.id}")
+    #             return couple_hit
+
+    #     global_hit = qs.first()
+    #     if global_hit:
+    #         logger.info(f"Global cache hit: QuizQuestion {global_hit.id}")
+    #         return global_hit
+
+    #     return None
+
+    @staticmethod
+    def should_force_refresh(couple_id, keywords):
+        try:
+            last_quiz = QuizQuestion.objects.filter(
+                couple_id=couple_id
+            ).order_by('-created_at').first()
+            
+            if not last_quiz:
+                return True
+                
+            new_keywords = set(keywords) - set(last_quiz.source_keywords)
+            # return len(new_keywords) >= QuizGenerator.MIN_KEYWORDS
+            return len(new_keywords) > 0
+            
+        except Exception as e:
+            logger.error(f"Force refresh check failed: {str(e)}")
+            return True
+
+    @staticmethod
+    def force_new_generation(couple_id, template_type, keywords, count=5):
+        try:
+            template = QuizTemplate.objects.get(template_type=template_type)
+            prompt = f"""
+            Generate FRESH questions about these NEW topics:
+            {', '.join(keywords)}
+            
+            Avoid repeating previous themes. Focus on specific details.
+            Include references to: {', '.join(keywords[:3])}
+            
+            Template requirements:
+            {template.system_prompt}
+            
+            Required JSON format:
+            {json.dumps(template.example_json, indent=2)}
+            """
+
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[{"parts": [{"text": prompt}]}],
+                # generation_config={"temperature": 0.8}
+            )
+
+            if not response.candidates:
+                raise ValueError("Empty Gemini response")
+
+            json_str = re.sub(r'[^\{]*({.*})[^\}]*', r'\1', response.text, flags=re.DOTALL)
+            data = json.loads(json_str.strip())
+            validate(data, TEMPLATE_SCHEMAS[template_type])
+
+            return QuizQuestion.objects.create(
+                couple_id=couple_id,
+                template=template,
+                question_data=data,
+                source_keywords=keywords
+            )
+
+        except Exception as e:
+            logger.error(f"Forced generation failed: {str(e)}")
+            return None
+
 
     @staticmethod
     def generate_quiz(couple_id, template_type=None, count=5):
@@ -213,6 +348,10 @@ class QuizGenerator:
                 template_type = QuizGenerator.select_template(keywords)
                 logger.info(f"Auto-selected template: {template_type}")
             
+            if QuizGenerator.should_force_refresh(couple_id, keywords):
+                logger.info("Forcing new generation due to significant changes")
+                return QuizGenerator.force_new_generation(couple_id, template_type, keywords, count)
+
             #3. Exact cache lookup
             exact = QuizGenerator.get_cached_questions(couple_id, template_type, keywords)
             if exact:
