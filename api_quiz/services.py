@@ -1,7 +1,7 @@
 from google import genai
 from django.db import models
 from django.conf import settings
-from .models import QuizTemplate, QuizQuestion, Couple, ChatKeyword
+from .models import QuizTemplate, QuizQuestion, Couple, ChatKeyword, RelationshipAssessment
 import re
 import json
 from collections import defaultdict
@@ -84,6 +84,107 @@ TEMPLATE_SCHEMAS = {
     }
 }
 
+EMOTION_MAP = {
+    # Conflict & tension
+    'fight': {
+        'tone': 'reconciliation',
+        'lead_in': "I know sometimes couples argue. Let’s turn that energy into warm reminders of why you love each other:\n"
+    },
+    'argue': {
+        'tone': 'reconciliation',
+        'lead_in': "Arguments happen—here are questions to help you reconnect and laugh again:\n"
+    },
+    'disagreement': {
+        'tone': 'reconciliation',
+        'lead_in': "Disagreements come and go. Let’s pivot to the good times with these prompts:\n"
+    },
+    # Sadness & low mood
+    'sad': {
+        'tone': 'comfort',
+        'lead_in': "Feeling down? These questions will bring back your brightest moments:\n"
+    },
+    'upset': {
+        'tone': 'comfort',
+        'lead_in': "When one of you is upset, small joys can help heal. Try these prompts:\n"
+    },
+    'lonely': {
+        'tone': 'comfort',
+        'lead_in': "Loneliness can creep in. These questions remind you you’re in this together:\n"
+    },
+    # Anger & frustration
+    'angry': {
+        'tone': 'calm',
+        'lead_in': "Anger can be intense. Let’s cool down with questions that spark empathy:\n"
+    },
+    'frustrated': {
+        'tone': 'calm',
+        'lead_in': "Frustration builds walls. These prompts will help you find the door back to each other:\n"
+    },
+    # Boredom & routine
+    'bored': {
+        'tone': 'excite',
+        'lead_in': "Feeling stuck in a rut? Shake things up with these fun, fresh questions:\n"
+    },
+    'routine': {
+        'tone': 'excite',
+        'lead_in': "Routines are comforting but can be stale. Let’s spark new energy with these prompts:\n"
+    },
+    # Jealousy & insecurity
+    'jealous': {
+        'tone': 'reassurance',
+        'lead_in': "Jealousy can sting. These questions will remind you of the trust you share:\n"
+    },
+    'insecure': {
+        'tone': 'reassurance',
+        'lead_in': "Insecurity can weigh you down. Let’s build each other up with these prompts:\n"
+    },
+    # Gratitude & warmth
+    'grateful': {
+        'tone': 'celebrate',
+        'lead_in': "Gratitude lights up hearts. Reflect on your blessings together with these prompts:\n"
+    },
+    'thankful': {
+        'tone': 'celebrate',
+        'lead_in': "Thankfulness deepens bonds. Here are questions to share your appreciation:\n"
+    },
+    # Excitement & passion
+    'excited': {
+        'tone': 'energize',
+        'lead_in': "Excitement is contagious! Fuel your passion with these playful prompts:\n"
+    },
+    'passion': {
+        'tone': 'energize',
+        'lead_in': "Let’s turn up the heat—here are questions that spark intimacy and fun:\n"
+    },
+    # Nostalgia & memories
+    'memory': {
+        'tone': 'nostalgic',
+        'lead_in': "Let’s take a trip down memory lane with these reflective prompts:\n"
+    },
+    'nostalgia': {
+        'tone': 'nostalgic',
+        'lead_in': "Nostalgia warms the heart. Recall your best moments with these questions:\n"
+    },
+    # Stress & relief
+    'stress': {
+        'tone': 'soothe',
+        'lead_in': "Stress can build walls. These gentle prompts will help you unwind together:\n"
+    },
+    'anxious': {
+        'tone': 'soothe',
+        'lead_in': "Anxiety can be overwhelming. Find calm together with these soothing questions:\n"
+    },
+    # Missing & longing
+    'miss': {
+        'tone': 'longing',
+        'lead_in': "Missing each other’s presence? These prompts will bring you close in spirit:\n"
+    },
+    'longing': {
+        'tone': 'longing',
+        'lead_in': "Longing can feel heavy. Let’s bridge the distance with these heartfelt prompts:\n"
+    }
+}
+
 def jaccard_similarity(a, b):
     sa, sb = set(a), set(b)
     return (len(sa & sb) / len(sa | sb)) if sa or sb else 0.0
@@ -127,55 +228,167 @@ class KeywordManager:
     #         logger.error(f"Keyword update failed: {str(e)}")
     #         raise
 
-    @staticmethod
-    def update_keywords(couple_id, text):
-        """Enhanced keyword processing with phrase prioritization"""
-        try:
-            phrases = TextProcessor.extract_phrases(text)
+    # @staticmethod
+    # def update_keywords(couple_id, text):
+    #     """Enhanced keyword processing with phrase prioritization"""
+    #     try:
+    #         phrases = TextProcessor.extract_phrases(text)
             
-            # Filter and weight phrases
-            processed = []
-            for phrase_type in ['trigrams', 'bigrams', 'words']:
-                for phrase, freq in phrases.get(phrase_type, []):
-                    # Add type-based weights
-                    weight = {
-                        'trigrams': 3,
-                        'bigrams': 2,
-                        'words': 1
-                    }[phrase_type]
+    #         # Filter and weight phrases
+    #         processed = []
+    #         for phrase_type in ['trigrams', 'bigrams', 'words']:
+    #             for phrase, freq in phrases.get(phrase_type, []):
+    #                 # Add type-based weights
+    #                 weight = {
+    #                     'trigrams': 3,
+    #                     'bigrams': 2,
+    #                     'words': 1
+    #                 }[phrase_type]
                     
-                    # Filter meaningless phrases
-                    if TextProcessor.is_meaningful(phrase):
-                        processed.append((phrase, freq * weight))
+    #                 # Filter meaningless phrases
+    #                 if TextProcessor.is_meaningful(phrase):
+    #                     processed.append((phrase, freq * weight))
             
-            # Update database with weighted frequencies
-            for phrase, weighted_freq in processed:
-                obj, created = ChatKeyword.objects.update_or_create(
+    #         # Update database with weighted frequencies
+    #         for phrase, weighted_freq in processed:
+    #             obj, created = ChatKeyword.objects.update_or_create(
+    #                 couple_id=couple_id,
+    #                 keyword=phrase,
+    #                 defaults={'frequency': weighted_freq}
+    #             )
+    #             if not created:
+    #                 obj.frequency = F('frequency') + weighted_freq
+    #                 obj.save(update_fields=['frequency'])
+    #         logger.info(f"Updated keywords for couple {couple_id}")
+    #     except Exception as e:
+    #         logger.error(f"Keyword update failed: {str(e)}")
+    #         raise
+        
+    @staticmethod
+    # def update_keywords(couple_id, text):
+    #     """Extract, filter, de-overlap top phrases, then upsert frequencies."""
+    #     try:
+    #         # 1) Extract raw phrases
+    #         phrases = TextProcessor.extract_phrases(text)
+    #         processed = []
+    #         for phrase_type in ('trigrams', 'bigrams', 'words'):
+    #             weight = {'trigrams':3, 'bigrams':2, 'words':1}[phrase_type]
+    #             for phrase, freq in phrases.get(phrase_type, []):
+    #                 if TextProcessor.is_meaningful(phrase):
+    #                     processed.append((phrase, freq * weight))
+
+    #         # 2) Sort by (score, length) descending
+    #         processed.sort(key=lambda x: (x[1], len(x[0].split())), reverse=True)
+
+    #         # 3) Pick top-10, skipping overlaps
+    #         selected = []
+    #         for phrase, score in processed:
+    #             # skip if phrase is substring of any already selected, or vice versa
+    #             if any(phrase in s or s in phrase for s in selected):
+    #                 continue
+    #             selected.append(phrase)
+    #             if len(selected) >= 10:
+    #                 break
+
+    #         logger.debug(f"Final keywords for couple {couple_id}: {selected}")
+
+    #         # 4) Upsert into ChatKeyword table
+    #         for kw in selected:
+    #             # weight based on original list
+    #             freq = next(s for p, s in processed if p == kw)
+    #             obj, created = ChatKeyword.objects.get_or_create(
+    #                 couple_id=couple_id,
+    #                 keyword=kw,
+    #                 defaults={'frequency': freq, 'is_phrase': ' ' in kw}
+    #             )
+    #             if not created:
+    #                 obj.frequency = F('frequency') + freq
+    #                 obj.save(update_fields=['frequency'])
+
+    #         logger.info(f"Updated keywords for couple {couple_id}: {selected}")
+
+    #     except Exception as e:
+    #         logger.error(f"Keyword update failed: {e}")
+    #         raise
+
+    def update_keywords(couple_id, text):
+        """Extract only general keywords (unigrams) to avoid over-personalization"""
+        try:
+            # 1) Extract raw words only
+            phrases = TextProcessor.extract_phrases(text)
+            # Keep only unigrams for general personalization
+            processed = [
+                (word, freq) for word, freq in phrases.get('words', [])
+                if TextProcessor.is_meaningful(word)
+            ]
+
+            # 2) Sort by frequency descending
+            processed.sort(key=lambda x: x[1], reverse=True)
+
+            # 3) Pick top-N unigrams
+            selected = [phrase for phrase, _ in processed[:10]]
+            logger.debug(f"General keywords for couple {couple_id}: {selected}")
+
+            # 4) Upsert into ChatKeyword table
+            for kw in selected:
+                freq = next((f for p, f in processed if p == kw), 1)
+                obj, created = ChatKeyword.objects.get_or_create(
                     couple_id=couple_id,
-                    keyword=phrase,
-                    defaults={'frequency': weighted_freq}
+                    keyword=kw,
+                    defaults={'frequency': freq, 'is_phrase': False}
                 )
                 if not created:
-                    obj.frequency = F('frequency') + weighted_freq
+                    obj.frequency = F('frequency') + freq
                     obj.save(update_fields=['frequency'])
-            logger.info(f"Updated keywords for couple {couple_id}")
+
+            logger.info(f"Updated general keywords for couple {couple_id}: {selected}")
         except Exception as e:
-            logger.error(f"Keyword update failed: {str(e)}")
+            logger.error(f"Keyword update failed: {e}")
             raise
-        
+
+    # @staticmethod
+    # def get_top_keywords(couple_id, limit=10):
+    #     """Retrieve top keywords with proper error handling"""
+    #     try:
+    #         raw = list(ChatKeyword.objects.filter(couple_id=couple_id)
+    #                    .extra(select={'length': 'LENGTH(keyword)'})
+    #                    .order_by('-frequency', '-length')[:limit]
+    #                    .values_list('keyword', flat=True))
+    #         logger.debug(f"Top keywords for couple {couple_id}: {raw}")
+    #         return raw
+    #     except Exception as e:
+    #         logger.error(f"Keyword retrieval failed: {str(e)}")
+    #         return []
+
+    @staticmethod
+    # def get_top_keywords(couple_id, limit=10):
+    #     """Return the current top-10 keywords (after de-overlap) for this couple."""
+    #     try:
+    #         raw = list(
+    #             ChatKeyword.objects
+    #             .filter(couple_id=couple_id)
+    #             .order_by('-frequency')[:limit]
+    #             .values_list('keyword', flat=True)
+    #         )
+    #         logger.debug(f"Top keywords for couple {couple_id}: {raw}")
+    #         return raw
+    #     except Exception as e:
+    #         logger.error(f"Keyword retrieval failed: {e}")
+    #         return []
 
     @staticmethod
     def get_top_keywords(couple_id, limit=10):
-        """Retrieve top keywords with proper error handling"""
+        """Retrieve only unigrams for quiz generation"""
         try:
-            raw = list(ChatKeyword.objects.filter(couple_id=couple_id)
-                       .extra(select={'length': 'LENGTH(keyword)'})
-                       .order_by('-frequency', '-length')[:limit]
-                       .values_list('keyword', flat=True))
-            logger.debug(f"Top keywords for couple {couple_id}: {raw}")
+            raw = list(
+                ChatKeyword.objects.filter(couple_id=couple_id)
+                .order_by('-frequency')[:limit]
+                .values_list('keyword', flat=True)
+            )
+            logger.debug(f"Top general keywords for couple {couple_id}: {raw}")
             return raw
         except Exception as e:
-            logger.error(f"Keyword retrieval failed: {str(e)}")
+            logger.error(f"Keyword retrieval failed: {e}")
             return []
 
 
@@ -339,7 +552,20 @@ class QuizGenerator:
             if not raw_keywords:
                 raise ValueError("No keywords found for this couple")
             keywords = sorted(set(raw_keywords))
+
+            # 1a) Detect dominant emotion
+            lead_in = ""
+            for kw in keywords:
+                # emo = EMOTION_MAP.get(kw.lower())
+                # if emo:
+                #     lead_in = emo['lead_in']
+                #     break
+                if kw.lower() in EMOTION_MAP:
+                    lead_in = EMOTION_MAP[kw.lower()]['lead_in']
+                    break
             
+
+
             logger.debug(f"Canonical keywords for couple {couple_id}: {keywords}")
             if not keywords:
                 raise ValueError("No keywords found for this couple")
@@ -394,20 +620,30 @@ class QuizGenerator:
                 raise ValueError(f"Template {template_type} not found")
             
             # Build context-aware prompt
-            prompt = f"""
-            Generate engaging couple questions based on these conversation themes:
-            {', '.join(keywords)}
+            # prompt = f"""
+            # Generate engaging couple questions based on these conversation themes:
+            # {', '.join(keywords)}
             
-            {template.system_prompt}
+            # {template.system_prompt}
             
-            Important guidelines:
-            1. Make questions personal and relationship-focused
-            2. Ensure variety in question topics
-            3. Keep language warm and inviting
-            4. Use the exact JSON format below:
+            # Important guidelines:
+            # 1. Make questions personal and relationship-focused
+            # 2. Ensure variety in question topics
+            # 3. Keep language warm and inviting
+            # 4. Use the exact JSON format below:
             
-            {json.dumps(template.example_json, indent=2)}
-            """
+            # {json.dumps(template.example_json, indent=2)}
+            # """
+
+
+            themes = ', '.join(keywords)
+            if lead_in:
+                prompt = f"{lead_in}"
+            else:
+                prompt = f"Let’s explore these themes:\n"
+
+            prompt += f"{themes}\n\n{template.system_prompt}\n\nUse this JSON format:\n{json.dumps(template.example_json)}"
+
             
             # Call Gemini API
             response = client.models.generate_content(
@@ -450,4 +686,77 @@ class QuizGenerator:
             return None
         except Exception as e:
             logger.error(f"Quiz generation failed: {str(e)}")
+            return None
+    
+    @staticmethod
+    def assess_relationship(couple_id, payload):
+        try:
+            couple = Couple.objects.get(id=couple_id)
+            # 1) Build LLM prompt
+            questions = payload['answers']
+            # Describe the seven factors and the 5-stage model:
+            intro = """
+You are a relationship coach. Given the couple's answers below,
+assign:
+  • One of the five relationship states (Honeymoon, Exploration, Adaptation, Commitment, Acceptance)
+  • A 1–10 score for each health factor:
+      1. Open communication
+      2. Trust
+      3. Individuality
+      4. Curiosity
+      5. Time apart
+      6. Playfulness
+      7. Physical intimacy
+
+Respond ONLY with JSON like:
+{
+  "state": "Commitment",
+  "scores": {
+    "open_communication": 8,
+    "trust": 9,
+    "individuality": 7,
+    "curiosity": 6,
+    "time_apart": 5,
+    "playfulness": 8,
+    "physical_intimacy": 7
+  }
+}
+"""
+            # Append each Q&A:
+            body = "\n".join(
+                f"Q: {qa['question_text']}\nA: {qa['answer']}"
+                for qa in questions
+            )
+
+            prompt = intro + "\n\n" + body
+
+            # 2) Call Gemini
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[{"parts":[{"text": prompt}]}]
+            )
+            # text = response.candidates[0].text
+            text = response.text
+
+            # 3) Extract JSON
+            import re, json
+            json_str = re.sub(r'^[^{]*({.*})[^}]*$', r'\1', text, flags=re.DOTALL)
+            result = json.loads(json_str)
+
+            print(result)
+
+            # 4) Save to DB
+            return RelationshipAssessment.objects.create(
+                couple_id=couple_id,
+                state=result['state'],
+                open_communication=result['scores']['open_communication'],
+                trust=result['scores']['trust'],
+                individuality=result['scores']['individuality'],
+                curiosity=result['scores']['curiosity'],
+                time_apart=result['scores']['time_apart'],
+                playfulness=result['scores']['playfulness'],
+                physical_intimacy=result['scores']['physical_intimacy'],
+            )
+        except Exception as e:
+            logger.error(f"Assessment failed: {e}")
             return None

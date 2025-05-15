@@ -15,6 +15,7 @@ class QuizView(APIView):
                 )
                 
             return Response({
+                'quiz_id': quiz.id,
                 'questions': quiz.question_data['questions'],
                 'template': quiz.template.name,
                 'keywords': quiz.source_keywords
@@ -45,3 +46,43 @@ class ProcessChatView(APIView):
                 {"error": f"Keyword update failed: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+class QuizResultView(APIView):
+    def post(self, request, couple_id):
+        """
+        Accepts:
+        {
+          "quiz_id": 123,
+          "answers": [
+            {"question_text": "...", "answer": "..."},
+             ...
+          ]
+        }
+        Returns:
+        {
+          "state": "Commitment",
+          "scores": {
+            "open_communication": 8,
+            "trust": 9,
+            ...
+          }
+        }
+        """
+        payload = request.data
+        assessment = QuizGenerator.assess_relationship(couple_id, payload)
+        if not assessment:
+            return Response({"error":"Assessment failed"}, status=500)
+
+        # Serialize
+        return Response({
+            "state": assessment.state,
+            "scores": {
+                "open_communication": assessment.open_communication,
+                "trust": assessment.trust,
+                "individuality": assessment.individuality,
+                "curiosity": assessment.curiosity,
+                "time_apart": assessment.time_apart,
+                "playfulness": assessment.playfulness,
+                "physical_intimacy": assessment.physical_intimacy,
+            }
+        })

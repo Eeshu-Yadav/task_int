@@ -44,3 +44,27 @@ class QuizQuestion(models.Model):
     source_keywords = JSONField()
     created_at = models.DateTimeField(auto_now_add=True)
 
+class RelationshipAssessment(models.Model):
+    couple = models.ForeignKey(Couple, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    state = models.CharField(
+        max_length=50,
+        choices=[
+            ('Honeymoon','Dating/Honeymoon'),
+            ('Exploration','Doubt & Denial/Exploration'),
+            ('Adaptation','Disillusionment/Adaptation'),
+            ('Commitment','Decision/Commitment'),
+            ('Acceptance','True Love/Acceptance'),
+        ]
+    )
+
+    open_communication = models.IntegerField()
+    trust               = models.IntegerField()
+    individuality       = models.IntegerField()
+    curiosity           = models.IntegerField()
+    time_apart          = models.IntegerField()
+    playfulness         = models.IntegerField()
+    physical_intimacy   = models.IntegerField()
+
+
